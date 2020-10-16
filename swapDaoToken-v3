@@ -1,0 +1,1042 @@
+-- ERC20合约
+-- 支持多签合约持有本合约代币的版本
+-- add this Contract type when only compile by gluac
+type Contract<T> = {
+    storage: T
+}
+
+-- type State = 'NOT_INITED' | 'COMMON' | 'PAUSED' | 'STOPPED'
+
+type Storage = {
+    name: string,
+    symbol: string,
+    supply: int,
+    precision: int, -- only used to display
+    -- allowed: Map<string>, -- 各用户授权给spender用户可以多次提现的余额，每一项值是一个 userAddress=>amount int构成的json string
+    -- lockedAmounts: Map<string>, -- userAddress => "lockedAmount,unlockBlockNumber"
+    state: string,
+    allowLock: bool,
+    fee: int, -- 手续费
+    minTransferAmount: int, -- 每次最低转账金额
+    feeReceiveAddress: string, -- 手续费接收地址
+    admin: string, -- admin user address
+    swapContractSymbol : Map<string>, -- swapContractSymbol 设置合约别名 -- 不可修改
+    contractStartBlock: int, --合约发布区块高度
+    -- userLiquidityAmount: Map<string> -- userAddress => amount
+    liquidityUserCount: int,
+    -- userAddress: Map<string> -- index => userAddress
+    -- userAddressToIndex : Map<int> -- userAddress => index
+    lastPayBlockHeight: Map<int>, --每个币种未支付金额
+    swapContractBlockReward: Map<string>, -- 每个币种的付费周期 {swapContractAddr: "blocknumber,reward,blocknumber,reward,blocknumber,0"}
+
+    totalSwapTokenCount: Map<int>, -- 根据更新调用生成总资产数量
+    pageStart: Map<bool>, -- 标志是否开始分页
+    pageCurrentPos: Map<int>, -- 记录当前执行位置
+    pageStartPayBlock: Map<int>, --分页开始执行的块高
+    -- userDistributeAmountRecord: Map<int> -- userAddress => amount --用户总分币额记录
+    -- userLastObtainBlock: Map<int> -- 用户上次领取块高
+}
+
+-- events: Transfer, Paused, Resumed, Stopped, AllowedLock, Locked, Unlocked,ChangeProjectManager,ChangeTeamOwner,addSwapContract
+
+var M = Contract<Storage>()
+
+function M:init()
+    print("token contract creating")
+    self.storage.name = ''
+    self.storage.symbol = ''
+    self.storage.supply = 0
+    self.storage.precision = 0
+    self.storage.state = 'NOT_INITED'
+    self.storage.admin = caller_address
+    self.storage.allowLock = false
+    self.storage.fee = 0
+    self.storage.minTransferAmount = 0
+    self.storage.feeReceiveAddress = caller_address
+    self.storage.contractStartBlock = get_header_block_num()
+    
+    self.storage.liquidityUserCount = 1
+    self.storage.lastPayBlockHeight = {}
+    self.storage.swapContractBlockReward ={}
+    --self.storage.callContract = ''
+    self.storage.totalSwapTokenCount={}
+    self.storage.pageStart={}
+    self.storage.pageCurrentPos={}
+    self.storage.pageStartPayBlock = {}
+    self.storage.swapContractSymbol = {}
+    
+    print("token contract created")
+end
+
+
+
+let function get_from_address()
+    -- 支持合约作为代币持有者
+    var from_address: string
+    let prev_contract_id = get_prev_call_frame_contract_address()
+    if prev_contract_id and is_valid_contract_address(prev_contract_id) then
+        -- 如果来源方是合约时
+        from_address = prev_contract_id
+    else
+        from_address = caller_address
+    end
+    return from_address
+end
+
+let function checkAdmin(self: table)
+    if self.storage.admin ~= get_from_address() then
+        return error("you are not admin, can't call this function")
+    end
+end
+
+let function checkKeyIn(tmap,key)
+    if tmap == nil then
+        return false
+    end
+    if tmap[key] == nil then
+        return false
+    else
+        return true
+
+    end
+    return false
+
+end
+
+let function checkContractOrAdmin(self: table)
+    let call_addr = get_from_address()
+   -- print( self.storage.swapContractSymbol)
+    if self.storage.admin ~= call_addr and self.storage.swapContractSymbol[call_addr] == nil then
+        return  error("you are not admin or contract addr, can't call this function")
+    end
+end
+
+
+let function check_caller_frame_valid(M: table)
+    return
+    -- let prev_contract_id =  get_prev_call_frame_contract_address()
+    -- let prev_api_name = get_prev_call_frame_api_name()
+    -- if (not prev_contract_id) or (#prev_contract_id < 1) then
+    --     return true
+    -- elseif (prev_api_name == "vote") or (prev_api_name == "voteFunc") then
+    --     return true
+    -- else
+    --     return error("this api can't called by invalid contract")
+    -- end
+end
+
+
+-- parse a,b,c format string to [a,b,c]
+let function parse_args(arg: string, count: int, error_msg: string)
+    if not arg then
+        return error(error_msg)
+    end
+    let parsed = string.split(arg, ',')
+    if (not parsed) or (#parsed ~= count) then
+        return error(error_msg)
+    end
+    return parsed
+end
+
+let function parse_at_least_args(arg: string, count: int, error_msg: string)
+    if not arg then
+        return error(error_msg)
+    end
+    let parsed = string.split(arg, ',')
+    if (not parsed) or (#parsed < count) then
+        return error(error_msg)
+    end
+    return parsed
+end
+
+let function arrayContains(col: Array<object>, item: object)
+    if not item then
+        return false
+    end
+    var value: object
+    for _, value in ipairs(col) do
+        if value == item then
+            return true
+        end
+    end
+    return false
+end
+
+function M:on_deposit(amount: int)
+    return error("not support deposit to token")
+end
+
+-- arg: name,symbol,supply,precision
+function M:init_token(arg: string)
+    checkAdmin(self)
+    check_caller_frame_valid(self)
+    pprint('arg:', arg)
+    if self.storage.state ~= 'NOT_INITED' then
+        return error("this token contract inited before")
+    end
+    let parsed = parse_args(arg, 4, "argument format error, need format: name,symbol,supply,precision")
+    let info = {name: parsed[1], symbol: parsed[2], supply: tointeger(parsed[3]), precision: tointeger(parsed[4])}
+    if not info.name then
+        return error("name needed")
+    end
+    self.storage.name = tostring(info.name)
+    if not info.symbol then
+        return error("symbol needed")
+    end
+    self.storage.symbol = tostring(info.symbol)
+    if not info.supply then
+        return error("supply needed")
+    end
+    let supply = tointeger(info.supply)
+    if (not supply) or (supply <= 0) then
+        return error("supply must be positive integer")
+    end
+    self.storage.supply = supply
+
+    let from_address = get_from_address()
+    if from_address ~= caller_address then
+        return error("init_token can't be called from other contract")
+    end
+
+    fast_map_set('users', caller_address, supply)
+
+    if not info.precision then
+        return error("precision needed")
+    end
+    let precision = tointeger(info.precision)
+    if (not precision) or (precision <= 0) then
+        return  error("precision must be positive integer")
+    end
+    let allowedPrecisions = [1,10,100,1000,10000,100000,1000000,10000000,100000000]
+    if not (arrayContains(allowedPrecisions, precision)) then
+        return error("precision can only be positive integer in " .. json.dumps(allowedPrecisions))
+    end
+    self.storage.precision = precision
+    
+    self.storage.lastPayBlockHeight = {}
+    self.storage.state = 'COMMON'
+
+    let supplyStr = tostring(supply)
+    emit Inited(supplyStr)
+    
+    let eventArgStr = json.dumps({from: nil, to: caller_address, amount: supply, fee: 0, memo: 'Init'})
+    emit Transfer(eventArgStr)
+end
+
+
+
+let function checkState(self: table)
+    if self.storage.state == 'NOT_INITED' then
+        return error("contract token not inited")
+    end
+    if self.storage.state == 'PAUSED' then
+        return error("contract paused")
+    end
+    if self.storage.state == 'STOPPED' then
+        return error("contract stopped")
+    end
+end
+
+let function checkStateInited(self: table)
+    if self.storage.state == 'NOT_INITED' then
+        return error("contract token not inited")
+    end
+end
+
+let function checkAddress(addr: string)
+    let result = is_valid_address(addr)
+    if not result then
+        return error("address format error")
+    end
+    return result
+end
+
+offline function M:state(arg: string)
+    return self.storage.state
+end
+
+offline function M:tokenName(arg: string)
+    checkStateInited(self)
+    return self.storage.name
+end
+
+offline function M:precision(_: string)
+    checkStateInited(self)
+    return self.storage.precision
+end
+
+offline function M:tokenSymbol(arg: string)
+    checkStateInited(self)
+    return self.storage.symbol
+end
+
+offline function M:admin(_: string)
+    checkStateInited(self)
+    return self.storage.admin
+end
+
+offline function M:totalSupply(arg: string)
+    checkStateInited(self)
+    return self.storage.supply
+end
+
+
+offline function M:lastPayBlockHeight(_:string)
+    return self.storage.lastPayBlockHeight
+end
+
+offline function M:isAllowLock(_: string)
+    let resultStr = tostring(self.storage.allowLock)
+    return resultStr
+end
+
+offline function M:fee(_: string)
+    let feeStr = tostring(self.storage.fee)
+    return feeStr
+end
+
+offline function M:minTransferAmount(_: string)
+    let minTransferAmountStr = tostring(self.storage.minTransferAmount)
+    return minTransferAmountStr
+end
+
+offline function M:feeReceiveAddress(_: string)
+    return self.storage.feeReceiveAddress
+end
+
+function M:setFee(feeStr: string)
+    checkAdmin(self)
+    checkState(self)
+    let fee = tointeger(feeStr)
+    if (fee ~= 0) and ((not fee) or (fee < 0)) then
+        return error("error fee format")
+    end
+    self.storage.fee = fee
+    emit FeeChanged(feeStr)
+end
+
+function M:setMinTransferAmount(minTransferAmountStr: string)
+    checkAdmin(self)
+    checkState(self)
+    let minTransferAmount = tointeger(minTransferAmountStr)
+    if (minTransferAmount ~= 0) and ((not minTransferAmount) or (minTransferAmount < 0)) then
+        return error("error minTransferAmount format")
+    end
+    self.storage.minTransferAmount = minTransferAmount
+    emit MinTransferAmountChanged(minTransferAmountStr)
+end
+
+function M:setFeeReceiveAddress(feeReceiveAddress: string)
+    checkAdmin(self)
+    checkState(self)
+    if not is_valid_address(feeReceiveAddress) then
+        return error("invalid address")
+    end
+    if is_valid_contract_address(feeReceiveAddress) then
+        return error("can't use contract address")
+    end
+    self.storage.feeReceiveAddress = feeReceiveAddress
+    emit FeeReceiveAddressChanged(feeReceiveAddress)
+end
+
+
+function M:openAllowLock(_: string)
+    checkAdmin(self)
+    checkState(self)
+    check_caller_frame_valid(self)
+    if self.storage.allowLock then
+        return error("this contract had been opened allowLock before")
+    end
+    self.storage.allowLock = true
+    emit AllowedLock("")
+end
+
+let function getBalanceOfUser(self: table, addr: string)
+    return tointeger(fast_map_get('users', addr) or 0)
+end
+
+offline function M:balanceOf(owner: string)
+    checkStateInited(self)
+    if (not owner) or (#owner < 1) then
+        return error('arg error, need owner address as argument')
+    end
+    checkAddress(owner)
+    let amount = getBalanceOfUser(self, owner)
+    let amountStr = tostring(amount)
+    return amountStr
+end
+
+-- arg: limit(1-based),offset(0-based)}
+offline function M:users(arg: string)
+    return error("not implemented, you can find users from contract transaction history")
+end
+
+-- arg: to_address,integer_amount[,memo]
+function M:transfer(arg: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    let parsed = parse_at_least_args(arg, 2, "argument format error, need format is to_address,integer_amount[,memo]")
+    let info = {to: parsed[1], amount: tointeger(parsed[2])}
+    let to = tostring(info.to)
+    let amount = tointeger(info.amount)
+    var memo: string = nil
+    if #parsed >= 3 then
+        memo = tostring(parsed[3])
+    end
+    if (not to) or (#to < 1) then
+        return error("to address format error")
+    end
+    let fee = self.storage.fee
+    let minTransferAmount = self.storage.minTransferAmount
+    let feeReceiveAddress = self.storage.feeReceiveAddress
+    if (not amount) or (amount < 1) then
+        return error("amount format error")
+    end
+    if amount <= fee then
+        return error("amount not enough for fee")
+    end
+    if amount < minTransferAmount then
+        return error("only transfer amount >= " .. tostring(minTransferAmount) .. " will be accepted")
+    end
+    checkAddress(to)
+    let from_address = get_from_address()
+    var from_address_balance = tointeger(fast_map_get('users', from_address) or 0)
+    if (not from_address_balance) or (from_address_balance < amount) then
+        return error("you have not enoungh amount to transfer out")
+    end
+    from_address_balance = from_address_balance - amount
+    fast_map_set('users', from_address, from_address_balance)
+    if from_address_balance == 0 then
+        fast_map_set('users', from_address, nil)
+    end
+    let to_balance = tointeger(fast_map_get('users', to) or 0)
+    if (to_balance + amount) < 0 then
+        return error("amount overflow")
+    end
+    fast_map_set('users', to, to_balance + amount - fee)
+    if fee > 0 then
+        let feeReceiveAddressOldBalance = tointeger(fast_map_get('users', feeReceiveAddress) or 0)
+        if (feeReceiveAddressOldBalance + fee) < 0 then
+            return error("amount overflow")
+        end
+        fast_map_set('users', feeReceiveAddress, feeReceiveAddressOldBalance + fee)
+    end
+    let eventArgStr = json.dumps({from: from_address, to: to, amount: amount - fee, fee: fee, memo: memo})
+    emit Transfer(eventArgStr)
+
+	if is_valid_contract_address(to) then
+        -- 如果目标是合约地址，可能是多签合约，需要调用回调函数
+        let multiOwnedContract = import_contract_from_address(to)
+        let amountStr = tostring(amount - fee)
+        if multiOwnedContract and (multiOwnedContract.on_deposit_contract_token) then
+            multiOwnedContract:on_deposit_contract_token(amountStr)
+        end
+    end
+end
+
+-- spender用户从授权人授权的金额中发起转账
+-- arg format: fromAddress,toAddress,amount(with precision)
+function M:transferFrom(arg: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    let parsed = parse_at_least_args(arg, 3, "argument format error, need format is fromAddress,toAddress,amount(with precision)")
+    let fromAddress = tostring(parsed[1])
+    let toAddress = tostring(parsed[2])
+    let amount = tointeger(parsed[3])
+    var memo: string = nil
+    if #parsed >= 4 then
+        memo = tostring(parsed[4])
+    end
+    checkAddress(fromAddress)
+    checkAddress(toAddress)
+    if (not amount) or (amount <= 0) then
+        return error("amount must be positive integer")
+    end
+    
+    let fee = self.storage.fee
+    let minTransferAmount = self.storage.minTransferAmount
+    let feeReceiveAddress = self.storage.feeReceiveAddress
+    if amount <= fee then
+        return error("amount not enough for fee")
+    end
+    if amount < minTransferAmount then
+        return error("only transfer amount >= " .. tostring(minTransferAmount) .. " will be accepted")
+    end
+
+    let from_address_balance = tointeger(fast_map_get('users', fromAddress) or 0)
+    if (not from_address_balance) or (amount > from_address_balance) then
+        return error("fromAddress not have enough token to withdraw")
+    end
+    let allowedDataStr = fast_map_get('allowed', fromAddress)
+    if (not allowedDataStr) then
+        return error("not enough approved amount to withdraw")
+    end
+    let allowedData: Map<int> = totable(json.loads(tostring(allowedDataStr)))
+    let contractCaller = get_from_address()
+    if (not allowedData) or (not allowedData[contractCaller]) then
+        return error("not enough approved amount to withdraw")
+    end
+    let approvedAmount = tointeger(allowedData[contractCaller])
+    if (not approvedAmount) or (amount > approvedAmount) then
+        return error("not enough approved amount to withdraw")
+    end
+    let toAddressOldBalance = tointeger(fast_map_get('users', toAddress) or 0)
+    if (toAddressOldBalance + amount) < 0 then
+        return error("amount overflow")
+    end
+    fast_map_set('users', toAddress, toAddressOldBalance + amount - fee)
+    if fee > 0 then
+        let feeReceiveAddressOldBalance = tointeger(fast_map_get('users', feeReceiveAddress) or 0)
+        if (feeReceiveAddressOldBalance + fee) < 0 then
+            return error("amount overflow")
+        end
+        fast_map_set('users', feeReceiveAddress, feeReceiveAddressOldBalance + fee)
+    end
+    fast_map_set('users', fromAddress, tointeger(fast_map_get('users', fromAddress)) - amount)
+    if tointeger(fast_map_get('users', fromAddress)) == 0 then
+        fast_map_set('users', fromAddress, nil)
+    end
+    allowedData[contractCaller] = approvedAmount - amount
+    if allowedData[contractCaller] == 0 then
+        allowedData[contractCaller] = nil
+    end
+    fast_map_set('allowed', fromAddress, json.dumps(allowedData))
+    let eventArgStr = json.dumps({from: fromAddress, to: toAddress, amount: amount - fee, fee: fee, memo: memo})
+    emit Transfer(eventArgStr)
+end
+
+-- 授权另一个用户可以从自己的余额中提现
+-- arg format: spenderAddress,amount(with precision)
+function M:approve(arg: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    let parsed = parse_at_least_args(arg, 2, "argument format error, need format is spenderAddress,amount(with precision)")
+    let spender = tostring(parsed[1])
+    checkAddress(spender)
+    let amount = tointeger(parsed[2])
+    if (not amount) or (amount < 0) then
+        return error("amount must be non-negative integer")
+    end
+    var allowedData: Map<int>
+    let contractCaller = get_from_address()
+    if (not fast_map_get('allowed', contractCaller)) then
+        allowedData = {}
+    else
+        allowedData = totable(json.loads(tostring(fast_map_get('allowed', contractCaller))))
+        if not allowedData then
+            return error("allowed storage data error")
+        end
+    end
+    allowedData[spender] = amount
+    fast_map_set('allowed', contractCaller, json.dumps(allowedData))
+    let eventArg = {from: contractCaller, spender: spender, amount: amount}
+    emit Approved(json.dumps(eventArg))
+end
+
+-- 查询一个用户被另外某个用户授权的金额
+-- arg format: spenderAddress,authorizerAddress
+offline function M:approvedBalanceFrom(arg: string)
+    let parsed = parse_at_least_args(arg, 2, "argument format error, need format is spenderAddress,authorizerAddress")
+    let spender = tostring(parsed[1])
+    let authorizer = tostring(parsed[2])
+    checkAddress(spender)
+    checkAddress(authorizer)
+    let allowedDataStr = fast_map_get('allowed', authorizer)
+    if (not allowedDataStr) then
+        return "0"
+    end
+    let allowedData: Map<int> = totable(json.loads(tostring(allowedDataStr)))
+    if (not allowedData) then
+        return "0"
+    end
+    let allowedAmount = allowedData[spender]
+    if (not allowedAmount) then
+        return "0"
+    end
+    let allowedAmountStr = tostring(allowedAmount)
+    return allowedAmountStr
+end
+
+-- 查询用户授权给其他人的所有金额
+-- arg format: fromAddress
+offline function M:allApprovedFromUser(arg: string)
+    let authorizer = arg
+    checkAddress(authorizer)
+    let allowedDataStr = fast_map_get('allowed', authorizer)
+    if (not allowedDataStr) then
+        return "{}"
+    end
+    return allowedDataStr
+end
+
+function M:pause(arg: string)
+    check_caller_frame_valid(self)
+    if self.storage.state == 'STOPPED' then
+        return error("this contract stopped now, can't pause")
+    end
+    if self.storage.state == 'PAUSED' then
+        return error("this contract paused now, can't pause")
+    end
+    checkAdmin(self)
+    self.storage.state = 'PAUSED'
+    emit Paused("")
+end
+
+function M:resume(arg: string)
+    check_caller_frame_valid(self)
+    if self.storage.state ~= 'PAUSED' then
+        return error("this contract not paused now, can't resume")
+    end
+    checkAdmin(self)
+    self.storage.state = 'COMMON'
+    emit Resumed("")
+end
+
+function M:stop(arg: string)
+    check_caller_frame_valid(self)
+    if self.storage.state == 'STOPPED' then
+        return error("this contract stopped now, can't stop")
+    end
+    if self.storage.state == 'PAUSED' then
+        return error("this contract paused now, can't stop")
+    end
+    checkAdmin(self)
+    self.storage.state = 'STOPPED'
+    emit Stopped("")
+end
+
+-- arg: integer_amount,unlockBlockNumber
+function M:lock(arg: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    if (not self.storage.allowLock) then
+        return error("this token contract not allow lock balance")
+    end
+    let parsed = parse_args(arg, 2, "arg format error, need format is integer_amount,unlockBlockNumber")
+    let toLockAmount = tointeger(parsed[1])
+    let unlockBlockNumber = tointeger(parsed[2])
+    if (not toLockAmount) or (toLockAmount<1) then
+        return error("to unlock amount must be positive integer")
+    end
+    if (not unlockBlockNumber) or (unlockBlockNumber < get_header_block_num()) then
+        return error("to unlock block number can't be earlier than current block number " .. tostring(get_header_block_num()))
+    end
+    let from_address = get_from_address()
+    if from_address ~= caller_address then
+        return error("only common user account can lock balance") -- 只有普通账户可以锁仓，合约不能锁仓
+    end
+    let balance = getBalanceOfUser(self, from_address)
+    if (toLockAmount > balance) then
+        return error("you have not enough balance to lock")
+    end
+    if (not fast_map_get('lockedAmounts', from_address)) then
+        fast_map_set('lockedAmounts', from_address, tostring(toLockAmount) .. ',' .. tostring(unlockBlockNumber))
+    else
+        return error("you have locked balance now, before lock again, you need unlock them or use other address to lock")
+    end
+    fast_map_set('users', from_address, balance - toLockAmount)
+    emit Locked(tostring(toLockAmount))
+end
+
+function M:unlock(_: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    if (not self.storage.allowLock) then
+        return error("this token contract not allow lock balance")
+    end
+    let from_address = get_from_address()
+    if (not fast_map_get('lockedAmounts', from_address)) then
+        return error("you have not locked balance")
+    end
+    let lockedInfoParsed = parse_args(tostring(fast_map_get('lockedAmounts', from_address)), 2, "locked amount info format error")
+    let lockedAmount = tointeger(lockedInfoParsed[1])
+    let canUnlockBlockNumber = tointeger(lockedInfoParsed[2])
+
+    if (get_header_block_num() < canUnlockBlockNumber) then
+        return error("your locked balance only can be unlock after block #" .. tostring(canUnlockBlockNumber))
+    end
+    fast_map_set('lockedAmounts', from_address, nil)
+    let fromAddressOldBalance = getBalanceOfUser(self, from_address)
+    if (fromAddressOldBalance + lockedAmount) < 0 then
+        return error("amount overflow")
+    end
+    fast_map_set('users', from_address, fromAddressOldBalance + lockedAmount)
+    emit Unlocked(from_address .. ',' .. tostring(lockedAmount))
+end
+
+-- arg: userAddress
+-- only admin can call this api
+function M:forceUnlock(arg: string)
+    checkState(self)
+    check_caller_frame_valid(self)
+    if (not self.storage.allowLock) then
+        return error("this token contract not allow lock balance")
+    end
+    checkAdmin(self)
+    let userAddr = arg
+    if (not userAddr) or (#userAddr < 1) then
+        return error("argument format error, need format userAddress")
+    end
+    checkAddress(userAddr)
+
+    if (not fast_map_get('lockedAmounts', userAddr)) then
+        return error("this user have not locked balance")
+    end
+    let lockedInfoParsed = parse_args(tostring(fast_map_get('lockedAmounts', userAddr)), 2, "locked amount info format error")
+    let lockedAmount = tointeger(lockedInfoParsed[1])
+    let canUnlockBlockNumber = tointeger(lockedInfoParsed[2])
+
+    if (get_header_block_num() < canUnlockBlockNumber) then
+        return error("this user locked balance only can be unlock after block #" .. tostring(canUnlockBlockNumber))
+    end
+    fast_map_set('lockedAmounts', userAddr, nil)
+    let userOldBalance = getBalanceOfUser(self, userAddr)
+    if (userOldBalance + lockedAmount) < 0 then
+        return error("amount overflow")
+    end
+    fast_map_set('users', userAddr, userOldBalance + lockedAmount)
+    emit Unlocked(userAddr .. ',' .. tostring(lockedAmount))
+end
+
+offline function M:lockedBalanceOf(owner: string)
+    if (not fast_map_get('lockedAmounts', owner)) then
+        return '0,0'
+    else
+        let resultStr = fast_map_get('lockedAmounts', owner)
+        return resultStr
+    end
+end
+
+
+-- TODO： 改为入参是个数组，数组中存放区间起始块高结束块高区间收入
+--arg: contract_addr,Symbol,rewardStr   ps rewardStr eg. blocknumber,reward,blocknumber,reward,blocknumber,0
+function M:setSwapContractAddr(arg:string)
+    checkAdmin(self)
+    let parsed = parse_at_least_args(arg, 4, "argument format error, need format is contract_addr,Symbol,blockNumber,reward,blockNumber,reward ... ")
+    let contract_addr = tostring(parsed[1])
+    let Symbol = tostring(parsed[2])
+    let contract_start_height = tointeger(parsed[3])
+    let storeReward = []
+    if(#parsed %2 ~=0) then
+        return error("argument format error, need format is contract_addr,Symbol,blockNumber,reward,blockNumber,reward ...")
+    end
+    var i :int
+   -- print(#parsed-2)
+    for i=1,(#parsed-2),1 do
+        print("setSwapContractAddr",i+2,parsed[i+2])
+        storeReward[i] = tointeger(parsed[i+2])
+    end
+
+    if self.storage.swapContractSymbol[contract_addr] ~= nil then
+    return error("contract already configed!")
+    end
+    
+    
+    for k,v in pairs(self.storage.swapContractSymbol) do 
+        if v == Symbol then
+            return error("contract symbol already exists!")
+        end
+    end
+
+    let eventArgStr = json.dumps({new_contract_addr: contract_addr, new_reward: storeReward,symbol:Symbol})
+    --self.storage.swapContracts[contract_addr] = feeRate
+    self.storage.swapContractSymbol[contract_addr] = Symbol
+    self.storage.totalSwapTokenCount[contract_addr] = 0
+    self.storage.swapContractBlockReward[contract_addr] = json.dumps(storeReward)
+    self.storage.pageStart[contract_addr]= false
+    self.storage.pageCurrentPos[contract_addr]=tointeger(1)
+    self.storage.pageStartPayBlock[contract_addr] = tointeger(1)
+    --let headblock = get_header_block_num()
+    self.storage.lastPayBlockHeight[contract_addr] = contract_start_height
+    emit addSwapContract(eventArgStr)
+end
+
+
+
+-- arg: contract_addr,from,to,amount
+
+function M:updateAddressLiquidity(arg:string)
+    checkContractOrAdmin(self)
+   -- print("updateAddressLiquidity",arg)
+    let parsed = parse_args(arg, 4, "argument format error, need format is contract_addr,from,to,liquidity_change_amount")
+    let contract_addr = tostring(parsed[1])
+	let from = tostring(parsed[2])
+    let to = tostring(parsed[3])
+    let liquidity_change_amount = tointeger(parsed[4])
+    let from_liquidity_balance = 0
+    let to_liquidity_balance = 0 
+
+
+    -- 取出合约symbol 使用用户表地址
+    let symbol = self.storage.swapContractSymbol[contract_addr]
+    if symbol == nil then
+        return error("contract symbol not found!!!")
+    end
+    let user_liquidity_balance_table = symbol.."userLiquidityAmount"
+    if from ~= 'mint' then
+        let user_id = fast_map_get("userAddressToIndex",from)
+        if( not user_id) then
+           -- print("add from user")
+            fast_map_set("userAddress",self.storage.liquidityUserCount,from)
+            fast_map_set("userAddressToIndex",from,self.storage.liquidityUserCount)
+            self.storage.liquidityUserCount = 1+tointeger(self.storage.liquidityUserCount)
+           -- print(self.storage.liquidityUserCount)
+            
+        
+        end
+        from_liquidity_balance = fast_map_get(user_liquidity_balance_table,from)
+        if (not from_liquidity_balance) then
+            from_liquidity_balance = 0
+            
+        end
+        if tointeger(from_liquidity_balance)< liquidity_change_amount then
+            return error("Insufficient user liquidity balance")
+        end
+        fast_map_set(user_liquidity_balance_table,from,tointeger(from_liquidity_balance)-liquidity_change_amount)
+        
+    else
+        --如果是铸币 增加总供应量
+
+        let swaptotal = safemath.number_add( safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]),safemath.safenumber(liquidity_change_amount))
+        self.storage.totalSwapTokenCount[contract_addr] = safemath.number_toint(swaptotal)
+
+    end
+    if to ~= 'destory' then
+        let user_id = fast_map_get("userAddressToIndex",to)
+        if( not user_id) then
+           -- print("add to user")
+            fast_map_set("userAddress",self.storage.liquidityUserCount,to)
+            fast_map_set("userAddressToIndex",to,self.storage.liquidityUserCount)
+            self.storage.liquidityUserCount = tointeger(self.storage.liquidityUserCount) + tointeger(1)
+          
+        end
+        to_liquidity_balance = fast_map_get(user_liquidity_balance_table,to)
+        if (not to_liquidity_balance) then
+            to_liquidity_balance = 0
+            
+        end
+        fast_map_set(user_liquidity_balance_table,to,tointeger(to_liquidity_balance)+liquidity_change_amount)
+    else
+        --如果是销毁 减少总供应量
+
+        let swaptotal = safemath.number_minus( safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]),safemath.safenumber(liquidity_change_amount))
+        self.storage.totalSwapTokenCount[contract_addr] = safemath.number_toint(swaptotal)
+    end
+    let eventArgStr = json.dumps({from: from,to: to, change_amount: liquidity_change_amount, from_old_balance: tointeger(from_liquidity_balance), from_new_balance: tointeger(from_liquidity_balance)-liquidity_change_amount,to_old_balance: tointeger(to_liquidity_balance), to_new_balance: tointeger(to_liquidity_balance)+liquidity_change_amount})
+    emit LiquidityChange(eventArgStr)
+
+	
+end
+
+--arg: amount
+function M:setOneBlockReward(amount:string)
+    checkAdmin(self)
+    let namount = tointeger(amount)
+    self.storage.oneblockReward = namount
+end
+
+--arg contract_addr, pageCount 为空时默认值为100
+--分页分币时，先检查分页状态，累加分页数量，对分页内的用户进行分币（同时增加查询用累计分币值），并检查是否执行成功 改回分页状态。
+
+--totalSwapTokenCount: int, -- 根据更新调用生成总资产数量
+   -- pageStart: int, -- 标志是否开始分页
+    --pageCurrentPos: int, -- 记录当前执行位置
+    -- userDistributeAmountRecord: Map<string> -- userAddress => amount
+function M:execNormalPay(arg:string)
+
+    checkState(self)
+    let parsed = parse_args(arg,2,"argument format error, need format is contract_addr, pageCount")
+    let contract_addr = tostring(parsed[1])
+    let count = tointeger(parsed[2])
+
+    let symbol = self.storage.swapContractSymbol[contract_addr]
+    if symbol == nil then
+        return error("contract symbol not found!!!")
+    end
+    let user_liquidity_balance_table = symbol.."userLiquidityAmount"
+
+    -- 计算分页数据
+    let pageCount = tointeger(count or 0)
+    if pageCount == 0 then
+        pageCount = 100
+    end
+    let localPageStart:int = tointeger(1)
+    if self.storage.pageStart[contract_addr] then
+        localPageStart = self.storage.pageCurrentPos[contract_addr]
+    else
+        self.storage.pageStartPayBlock[contract_addr] = tointeger(get_header_block_num())
+    end
+    let current_block = tointeger(self.storage.pageStartPayBlock[contract_addr])
+    if tointeger(current_block - self.storage.lastPayBlockHeight[contract_addr]) <tointeger(1) then
+        return error("The call execution interval is too short")
+    end
+    -- 计算分页截止位置。 如果分页截止位置等于用户数量 则修改分页标志符
+    let pageEnd :int = localPageStart + pageCount
+    let CurrentEnd= math.min(pageEnd, tointeger(self.storage.liquidityUserCount))
+    self.storage.pageCurrentPos[contract_addr] = tointeger(CurrentEnd)
+    
+
+    --计算当前区间收益，如果收益跨段则分开计算
+    let price = safemath.safenumber(0)
+    var i : int
+    let rewardList = json.loads(self.storage.swapContractBlockReward[contract_addr])
+    let range = (#rewardList)/2
+    let lastPayBlockHeight = tointeger(self.storage.lastPayBlockHeight[contract_addr])
+    if (lastPayBlockHeight > rewardList[range*2 -1]) then
+        return
+    end
+
+    for i=0,range-1,1 do 
+        --print("rewardList",rewardList[i*2+1],rewardList[i*2+2])
+        -- 跨区
+        -- 不跨区
+        -- 
+        if(lastPayBlockHeight >= rewardList[i*2+1])  then
+            -- 判断是否为最后区间
+            if(i < range-1) then
+                if (lastPayBlockHeight < rewardList[i*2+3]) then
+                    -- 判断上次领取在该区间内
+                    let delta_block = math.min(current_block,rewardList[i*2+3]) - lastPayBlockHeight 
+                    if(delta_block <0) then
+                        return error("execPay unkown error!")
+                    end
+                    price = safemath.number_add(price , safemath.number_multiply(safemath.safenumber(delta_block),safemath.safenumber(rewardList[i*2+2])))
+                    lastPayBlockHeight = math.min(current_block,rewardList[i*2+3])
+                end
+            end
+
+        end
+
+    end
+    
+    --   (( oneBlockReward)/totalfeeRate) * deltablock
+
+    --let price = safemath.number_multiply(safemath.number_div( safemath.number_multiply( safemath.safenumber(self.storage.swapContracts[contract_addr]),safemath.safenumber(self.storage.oneblockReward)),safemath.safenumber(self.storage.TotalFeeRate) ), safemath.safenumber(delta_block) ) 
+    --("price: " , safemath.number_toint(price))
+    var i : int
+    --print(tointeger(self.storage.liquidityUserCount)-tointeger(1))
+    --print("pagestart",localPageStart,"CurrentEnd",CurrentEnd)
+    for i=localPageStart,CurrentEnd-tointeger(1),1 do
+        let user_addr = fast_map_get("userAddress",tostring(i))
+        let user_swap_amount = tointeger(fast_map_get(user_liquidity_balance_table,user_addr) or 0)
+        if (user_swap_amount > 0 )then
+           
+            
+            let user_record_balance = tointeger(fast_map_get("userDistributeAmountRecord",user_addr) or 0)
+            let user_balance = tointeger(fast_map_get('users',user_addr) or 0)
+            let user_reward = safemath.number_div( safemath.number_multiply(price ,safemath.safenumber( user_swap_amount)) ,safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]))
+            if safemath.number_toint(user_reward)>tointeger(0) then
+
+                let user_new_balance:int = safemath.number_toint( safemath.number_add( safemath.safenumber( user_balance ), user_reward))
+                fast_map_set('users', user_addr, user_new_balance)
+                let user_new_record_balance: int = safemath.number_toint( safemath.number_add( safemath.safenumber( user_record_balance ), user_reward))
+
+                fast_map_set('userDistributeAmountRecord', user_addr, user_new_record_balance)
+            end
+            --print("user_addr",user_addr,"userbalance,record balance: ",user_new_balance,user_new_record_balance)
+        end
+
+    end
+    --print("CurrentEnd",CurrentEnd)
+    if CurrentEnd == tointeger(self.storage.liquidityUserCount) then
+        --print("reset page start")
+        self.storage.pageStart[contract_addr] = false
+        let eventArgStr = json.dumps({startBlock: self.storage.lastPayBlockHeight[contract_addr],endBlock: current_block, currentPrice: safemath.number_toint(price), userAccount: self.storage.liquidityUserCount})
+        self.storage.lastPayBlockHeight[contract_addr] = current_block
+        
+
+        emit execNormalPayRound(eventArgStr)
+    else
+        --print("set page start")
+        self.storage.pageStart[contract_addr] = true
+    end
+    
+
+end
+
+--contract_addr,user_addr
+offline function M:calUserCanReward(arg:string)
+    let parsed = parse_args(arg,2,"argument format error, need format is contract_addr, user_addr")
+    let contract_addr = tostring(parsed[1])
+    let user_addr = tostring(parsed[2])
+    let symbol = self.storage.swapContractSymbol[contract_addr]
+    if symbol == nil then
+        return error("contract symbol not found!!!")
+    end
+    let user_liquidity_balance_table = symbol.."userLiquidityAmount"
+    let current_block =get_header_block_num
+    let price = safemath.safenumber(0)
+    var i : int
+    let rewardList = json.loads(self.storage.swapContractBlockReward[contract_addr])
+    let range = (#rewardList)/2
+    let lastPayBlockHeight = tointeger(self.storage.lastPayBlockHeight[contract_addr])
+    if (lastPayBlockHeight > rewardList[range*2 -1]) then
+        return 0
+    end
+
+    for i=0,range-1,1 do 
+        --print("rewardList",rewardList[i*2+1],rewardList[i*2+2])
+        -- 跨区
+        -- 不跨区
+        -- 
+        if(lastPayBlockHeight >= rewardList[i*2+1])  then
+            -- 判断是否为最后区间
+            if(i < range-1) then
+                if (lastPayBlockHeight < rewardList[i*2+3]) then
+                    -- 判断上次领取在该区间内
+                    let delta_block = math.min(current_block,rewardList[i*2+3]) - lastPayBlockHeight 
+                    if(delta_block <0) then
+                        return error("execPay unkown error!")
+                    end
+                    price = safemath.number_add(price , safemath.number_multiply(safemath.safenumber(delta_block),safemath.safenumber(rewardList[i*2+2])))
+                    lastPayBlockHeight = math.min(current_block,rewardList[i*2+3])
+                end
+            end
+
+        end
+
+    end
+    let user_addr = fast_map_get("userAddress",tostring(i))
+    let user_swap_amount = tointeger(fast_map_get(user_liquidity_balance_table,user_addr) or 0)
+    if (user_swap_amount > 0 )then
+        let user_reward = safemath.number_div( safemath.number_multiply(price ,safemath.safenumber( user_swap_amount)) ,safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]))
+        return safemath.number_toint(user_reward)
+    else
+        return 0
+    end
+    
+end
+
+--contract_addr,user_addr
+offline function M:getAccountLiquidity(arg: string)
+    checkState(self)
+    let parsed = parse_args(arg,2,"argument format error, need format is contract_addr, user_addr")
+    let contract_addr = tostring(parsed[1])
+    let user_addr = tostring(parsed[2])
+    let symbol = self.storage.swapContractSymbol[contract_addr]
+    if symbol == nil then
+        return error("contract symbol not found!!!")
+    end
+    let liquidity_table_name = self.storage.swapContractSymbol[contract_addr].."userLiquidityAmount"
+
+    let user_balance = tointeger(fast_map_get(liquidity_table_name,user_addr) or 0)
+  
+    return user_balance
+end
+
+--user addr
+offline function M:getAccountRecordBalance(owner:string)
+    checkState(self)
+   -- print(owner)
+    let user_balance = tointeger(fast_map_get("userDistributeAmountRecord",owner) or 0 )
+    return user_balance
+end
+
+
+
+
+function M:on_destroy()
+    error("can't destroy token contract")
+end
+
+return M
