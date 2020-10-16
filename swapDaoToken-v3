@@ -1,5 +1,4 @@
--- ERC20合约
--- 支持多签合约持有本合约代币的版本
+
 -- add this Contract type when only compile by gluac
 type Contract<T> = {
     storage: T
@@ -12,29 +11,29 @@ type Storage = {
     symbol: string,
     supply: int,
     precision: int, -- only used to display
-    -- allowed: Map<string>, -- 各用户授权给spender用户可以多次提现的余额，每一项值是一个 userAddress=>amount int构成的json string
+    -- allowed: Map<string>, 
     -- lockedAmounts: Map<string>, -- userAddress => "lockedAmount,unlockBlockNumber"
     state: string,
     allowLock: bool,
-    fee: int, -- 手续费
-    minTransferAmount: int, -- 每次最低转账金额
-    feeReceiveAddress: string, -- 手续费接收地址
+    fee: int, 
+    minTransferAmount: int, 
+    feeReceiveAddress: string, 
     admin: string, -- admin user address
-    swapContractSymbol : Map<string>, -- swapContractSymbol 设置合约别名 -- 不可修改
-    contractStartBlock: int, --合约发布区块高度
+    swapContractSymbol : Map<string>, -- swapContractSymbol 
+    contractStartBlock: int, 
     -- userLiquidityAmount: Map<string> -- userAddress => amount
     liquidityUserCount: int,
     -- userAddress: Map<string> -- index => userAddress
     -- userAddressToIndex : Map<int> -- userAddress => index
-    lastPayBlockHeight: Map<int>, --每个币种未支付金额
-    swapContractBlockReward: Map<string>, -- 每个币种的付费周期 {swapContractAddr: "blocknumber,reward,blocknumber,reward,blocknumber,0"}
+    lastPayBlockHeight: Map<int>, 
+    swapContractBlockReward: Map<string>, -- {swapContractAddr: "blocknumber,reward,blocknumber,reward,blocknumber,0"}
 
-    totalSwapTokenCount: Map<int>, -- 根据更新调用生成总资产数量
-    pageStart: Map<bool>, -- 标志是否开始分页
-    pageCurrentPos: Map<int>, -- 记录当前执行位置
-    pageStartPayBlock: Map<int>, --分页开始执行的块高
-    -- userDistributeAmountRecord: Map<int> -- userAddress => amount --用户总分币额记录
-    -- userLastObtainBlock: Map<int> -- 用户上次领取块高
+    totalSwapTokenCount: Map<int>,
+    pageStart: Map<bool>, 
+    pageCurrentPos: Map<int>, 
+    pageStartPayBlock: Map<int>, 
+    -- userDistributeAmountRecord: Map<int> -- userAddress => amount 
+    -- userLastObtainBlock: Map<int> 
 }
 
 -- events: Transfer, Paused, Resumed, Stopped, AllowedLock, Locked, Unlocked,ChangeProjectManager,ChangeTeamOwner,addSwapContract
@@ -71,11 +70,11 @@ end
 
 
 let function get_from_address()
-    -- 支持合约作为代币持有者
+
     var from_address: string
     let prev_contract_id = get_prev_call_frame_contract_address()
     if prev_contract_id and is_valid_contract_address(prev_contract_id) then
-        -- 如果来源方是合约时
+
         from_address = prev_contract_id
     else
         from_address = caller_address
@@ -425,7 +424,7 @@ function M:transfer(arg: string)
     emit Transfer(eventArgStr)
 
 	if is_valid_contract_address(to) then
-        -- 如果目标是合约地址，可能是多签合约，需要调用回调函数
+
         let multiOwnedContract = import_contract_from_address(to)
         let amountStr = tostring(amount - fee)
         if multiOwnedContract and (multiOwnedContract.on_deposit_contract_token) then
@@ -434,7 +433,7 @@ function M:transfer(arg: string)
     end
 end
 
--- spender用户从授权人授权的金额中发起转账
+
 -- arg format: fromAddress,toAddress,amount(with precision)
 function M:transferFrom(arg: string)
     checkState(self)
@@ -505,7 +504,7 @@ function M:transferFrom(arg: string)
     emit Transfer(eventArgStr)
 end
 
--- 授权另一个用户可以从自己的余额中提现
+
 -- arg format: spenderAddress,amount(with precision)
 function M:approve(arg: string)
     checkState(self)
@@ -533,7 +532,7 @@ function M:approve(arg: string)
     emit Approved(json.dumps(eventArg))
 end
 
--- 查询一个用户被另外某个用户授权的金额
+
 -- arg format: spenderAddress,authorizerAddress
 offline function M:approvedBalanceFrom(arg: string)
     let parsed = parse_at_least_args(arg, 2, "argument format error, need format is spenderAddress,authorizerAddress")
@@ -557,7 +556,7 @@ offline function M:approvedBalanceFrom(arg: string)
     return allowedAmountStr
 end
 
--- 查询用户授权给其他人的所有金额
+
 -- arg format: fromAddress
 offline function M:allApprovedFromUser(arg: string)
     let authorizer = arg
@@ -708,7 +707,7 @@ offline function M:lockedBalanceOf(owner: string)
 end
 
 
--- TODO： 改为入参是个数组，数组中存放区间起始块高结束块高区间收入
+
 --arg: contract_addr,Symbol,rewardStr   ps rewardStr eg. blocknumber,reward,blocknumber,reward,blocknumber,0
 function M:setSwapContractAddr(arg:string)
     checkAdmin(self)
@@ -767,7 +766,7 @@ function M:updateAddressLiquidity(arg:string)
     let to_liquidity_balance = 0 
 
 
-    -- 取出合约symbol 使用用户表地址
+
     let symbol = self.storage.swapContractSymbol[contract_addr]
     if symbol == nil then
         return error("contract symbol not found!!!")
@@ -795,7 +794,7 @@ function M:updateAddressLiquidity(arg:string)
         fast_map_set(user_liquidity_balance_table,from,tointeger(from_liquidity_balance)-liquidity_change_amount)
         
     else
-        --如果是铸币 增加总供应量
+
 
         let swaptotal = safemath.number_add( safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]),safemath.safenumber(liquidity_change_amount))
         self.storage.totalSwapTokenCount[contract_addr] = safemath.number_toint(swaptotal)
@@ -817,7 +816,7 @@ function M:updateAddressLiquidity(arg:string)
         end
         fast_map_set(user_liquidity_balance_table,to,tointeger(to_liquidity_balance)+liquidity_change_amount)
     else
-        --如果是销毁 减少总供应量
+
 
         let swaptotal = safemath.number_minus( safemath.safenumber(self.storage.totalSwapTokenCount[contract_addr]),safemath.safenumber(liquidity_change_amount))
         self.storage.totalSwapTokenCount[contract_addr] = safemath.number_toint(swaptotal)
@@ -835,12 +834,11 @@ function M:setOneBlockReward(amount:string)
     self.storage.oneblockReward = namount
 end
 
---arg contract_addr, pageCount 为空时默认值为100
---分页分币时，先检查分页状态，累加分页数量，对分页内的用户进行分币（同时增加查询用累计分币值），并检查是否执行成功 改回分页状态。
 
---totalSwapTokenCount: int, -- 根据更新调用生成总资产数量
-   -- pageStart: int, -- 标志是否开始分页
-    --pageCurrentPos: int, -- 记录当前执行位置
+
+--totalSwapTokenCount: int, 
+   -- pageStart: int, 
+    --pageCurrentPos: int, 
     -- userDistributeAmountRecord: Map<string> -- userAddress => amount
 function M:execNormalPay(arg:string)
 
@@ -855,7 +853,7 @@ function M:execNormalPay(arg:string)
     end
     let user_liquidity_balance_table = symbol.."userLiquidityAmount"
 
-    -- 计算分页数据
+
     let pageCount = tointeger(count or 0)
     if pageCount == 0 then
         pageCount = 100
@@ -870,13 +868,13 @@ function M:execNormalPay(arg:string)
     if tointeger(current_block - self.storage.lastPayBlockHeight[contract_addr]) <tointeger(1) then
         return error("The call execution interval is too short")
     end
-    -- 计算分页截止位置。 如果分页截止位置等于用户数量 则修改分页标志符
+
     let pageEnd :int = localPageStart + pageCount
     let CurrentEnd= math.min(pageEnd, tointeger(self.storage.liquidityUserCount))
     self.storage.pageCurrentPos[contract_addr] = tointeger(CurrentEnd)
     
 
-    --计算当前区间收益，如果收益跨段则分开计算
+
     let price = safemath.safenumber(0)
     var i : int
     let rewardList = json.loads(self.storage.swapContractBlockReward[contract_addr])
@@ -888,14 +886,13 @@ function M:execNormalPay(arg:string)
 
     for i=0,range-1,1 do 
         --print("rewardList",rewardList[i*2+1],rewardList[i*2+2])
-        -- 跨区
-        -- 不跨区
+
         -- 
         if(lastPayBlockHeight >= rewardList[i*2+1])  then
-            -- 判断是否为最后区间
+           
             if(i < range-1) then
                 if (lastPayBlockHeight < rewardList[i*2+3]) then
-                    -- 判断上次领取在该区间内
+                    
                     let delta_block = math.min(current_block,rewardList[i*2+3]) - lastPayBlockHeight 
                     if(delta_block <0) then
                         return error("execPay unkown error!")
@@ -976,14 +973,13 @@ offline function M:calUserCanReward(arg:string)
 
     for i=0,range-1,1 do 
         --print("rewardList",rewardList[i*2+1],rewardList[i*2+2])
-        -- 跨区
-        -- 不跨区
+
         -- 
         if(lastPayBlockHeight >= rewardList[i*2+1])  then
-            -- 判断是否为最后区间
+
             if(i < range-1) then
                 if (lastPayBlockHeight < rewardList[i*2+3]) then
-                    -- 判断上次领取在该区间内
+                  
                     let delta_block = math.min(current_block,rewardList[i*2+3]) - lastPayBlockHeight 
                     if(delta_block <0) then
                         return error("execPay unkown error!")
