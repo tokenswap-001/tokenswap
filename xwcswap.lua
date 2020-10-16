@@ -1,5 +1,4 @@
--- uniswap && ERC20合约
--- 支持多签合约持有本合约代币的版本
+
 -- add this Contract type when only compile by gluac
 type Contract<T> = {
     storage: T
@@ -14,25 +13,25 @@ type Storage = {
     symbol: string,
     supply: int, -- bigint string
     precision: int, -- only used to display
-    -- allowed: Map<string>, -- 各用户授权给spender用户可以多次提现的余额，每一项值是一个 userAddress=>amount int构成的json string
+
     -- lockedAmounts: Map<string>, -- userAddress => "lockedAmount,unlockBlockNumber"
     state: string,
     allowLock: bool,
-    fee: int, -- 手续费
-    minTransferAmount: int, -- 每次最低转账金额
-    feeReceiveAddress: string, -- 手续费接收地址
+    fee: int, 
+    minTransferAmount: int, 
+    feeReceiveAddress: string, 
     admin: string, -- admin user address
 	
 	------uniswap info
-	fee_rate:string, ---兑换token时收取手续费比例  "0.05"
+	fee_rate:string, 
 	token_1_contractAddr:string,
 	token_2_contractAddr:string,
 	token_1_pool_amount:int, --bigint string
 	token_2_pool_amount:int, --bigint string
 	min_token1_amount:int,
     min_token2_amount:int,
-    dao_contract: string -- 治理合约地址
-    -- nativeBalances: Map<string, string>, 用户在本合约中拥有的各原生资产的余额，address => json string of assetSymbol => balance amount
+    dao_contract: string 
+    -- nativeBalances: Map<string, string>address => json string of assetSymbol => balance amount
 }
 
 -- events: Transfer, Paused, Resumed, Stopped, AllowedLock, Locked, Unlocked
@@ -74,11 +73,11 @@ let function getInputPrice(input_amount:int, input_reserve:int, output_reserve:i
 end
 
 let function get_from_address()
-    -- 支持合约作为代币持有者
+
     var from_address: string
     let prev_contract_id = get_prev_call_frame_contract_address()
     if prev_contract_id and is_valid_contract_address(prev_contract_id) then
-        -- 如果来源方是合约时
+
         from_address = prev_contract_id
     else
         from_address = caller_address
@@ -221,7 +220,6 @@ let function withdraw_native_asset_private(self:table,from:string,symbol:string,
 
     fast_map_set('nativeBalances', fromAddress, newUserAssetsStr)
     -- 从合约中提现
-
     let res1 = transfer_from_contract_to_address(fromAddress, symbol, amount)
 	if res1 ~= 0 then
 		return error("transfer asset " .. symbol .. " to " .. fromAddress .. " amount:"..tostring(amount).." error, error code: " .. tostring(res1))
@@ -238,7 +236,6 @@ let function withdraw_native_asset_private(self:table,from:string,symbol:string,
 end
 
 
--- 兑换合约的实际逻辑
 let function exchangePrivate(self: table, from_address: string, arg: string)
     checkState(self)
 	let parsed = parse_at_least_args(arg, 5, "argument format error, need format is sell_token_addr,sell_token_amount,want_buy_token_addr,min_want_buy_token_amount,expired_blocknum,withdraw(optional)")
@@ -335,14 +332,14 @@ let function exchangePrivate(self: table, from_address: string, arg: string)
 		return error("caculate internal error")
     end
     
-    -- 如果是原生资产，则需要从本合约中记录的此用户的余额减少或者增加
+
 	
     --sub from_address balance
     if is_native_asset_symbol(sell_token_addr) then
-        -- 卖出资产是原生代币
+
         changeUserNativeBalance(self, from_address, sell_token_addr, - sell_token_amount)
     else
-        -- 卖出资产是合约代币
+
 
 	    let transfer_from_contract = import_contract_from_address(sell_token_addr)
         let cur_contract = get_current_contract_address()
@@ -353,7 +350,7 @@ let function exchangePrivate(self: table, from_address: string, arg: string)
     -- transfer to from_address
     let buy_asset_symbol = tostring(event_arg["buy_asset"])
     if is_native_asset_symbol(buy_asset_symbol) then
-        -- 买入资产是原生代币
+
 
         changeUserNativeBalance(self, from_address, buy_asset_symbol, get_token_amount)
         if withdraw  then
@@ -361,7 +358,7 @@ let function exchangePrivate(self: table, from_address: string, arg: string)
         end
         
     else
-        -- 买入资产是合约代币
+
         let to_contract = import_contract_from_address(tostring(event_arg["buy_asset"]))
     to_contract:transfer(from_address..","..tostring(get_token_amount))
     end
@@ -395,7 +392,7 @@ let function call_dao_contract(self: table,from: string,to: string,amount:int)
     dao_contract:updateAddressLiquidity(self.id..","..from..","..to..","..tostring(amount))
 end
 
--- 充值原生资产到本合约
+
 function M:on_deposit_asset(jsonstrArgs: string)
     -- return error("not support deposit")
     checkState(self)	
@@ -410,13 +407,13 @@ function M:on_deposit_asset(jsonstrArgs: string)
 		 return error("on_deposit_asset arg wrong")
     end
     
-    -- 只能支持交易对中的原生资产
+
     if (symbol ~= self.storage.token_1_contractAddr) and (symbol ~= self.storage.token_2_contractAddr) then
         return error("only support deposit exchange pair assets")
     end
 	
     let fromAddress = get_from_address()
-    -- 在本合约中记录此用户拥有的此种原生资产增加部分余额
+
     let userAssets: table = json.loads(fast_map_get('nativeBalances', fromAddress) or '{}') or {}
     let oldBalance = tointeger(userAssets[symbol] or 0)
     let newBalance = oldBalance + amount
@@ -431,7 +428,7 @@ function M:on_deposit_asset(jsonstrArgs: string)
         reason: 'deposit'
     })
     emit NativeBalanceChange(nativeTransferEventArg)
-    -- 如果有params是exchange的参数格式，就直接兑换
+
     if #param > 0 then
         let parsedParam = string.split(param, ',')
         if #parsedParam >= tointeger(5) then
@@ -440,9 +437,8 @@ function M:on_deposit_asset(jsonstrArgs: string)
     end
 end
 
--- 提现原生资产. arg: assetSymbol,amount(without-precision)
 function M:withdraw_native_asset(arg: string)
-    -- 用户可以从本合约中记录的此用户拥有的余额中提现部分
+
     checkState(self)	
     let parsedArgs = parse_at_least_args(arg, 2)
     let symbol = tostring(parsedArgs[1])
@@ -462,7 +458,7 @@ function M:withdraw_native_asset(arg: string)
     userAssets[symbol] = newBalance
     let newUserAssetsStr = json.dumps(userAssets)
     fast_map_set('nativeBalances', fromAddress, newUserAssetsStr)
-    -- 从合约中提现
+
     let res1 = transfer_from_contract_to_address(fromAddress, symbol, amount)
 	if res1 ~= 0 then
 		return error("transfer asset " .. symbol .. " to " .. fromAddress .. " amount:"..tostring(amount).." error, error code: " .. tostring(res1))
@@ -477,7 +473,7 @@ function M:withdraw_native_asset(arg: string)
     emit NativeBalanceChange(nativeTransferEventArg)
 end
 
--- 查询用户在合约中的原生资产余额
+
 offline function M:query_native_asset(address: string)
     if not is_valid_address(address) then
         return error("invalid address param format")
@@ -495,11 +491,11 @@ function M:init_config(arg: string)
     let parsed = parse_args(arg, 7, "arg format error, need format: token1_addr,token2_addr,min_token1_amount,min_token2_amount,fee_rate,liquidity_token_name,liquidity_token_symbol")
     let info = {token1_addr: parsed[1],token2_addr: parsed[2],min_token1_amount: parsed[3],min_token2_amount: parsed[4],fee_rate: parsed[5], liquidity_token_name: parsed[6],liquidity_token_symbol: parsed[7]}
     
-    -- 同时支持原生资产和合约代币
+
 
     let token_1_contractAddr = tostring(info.token1_addr)
     if not is_native_asset_symbol(token_1_contractAddr) then
-        -- 如果是合约代币，需要检查合约API
+
 
         let tokenContr1 = import_contract_from_address(token_1_contractAddr)
         if not tokenContr1 or (not tokenContr1.transferFrom) then
@@ -511,7 +507,7 @@ function M:init_config(arg: string)
 		return error("token_2_contractAddr and token_1_contractAddr is same")
     end
     if not is_native_asset_symbol(token_2_contractAddr) then
-        -- 如果是合约代币，需要检查合约API
+
         print(token_2_contractAddr, ' is contract token')
         let tokenContr2 = import_contract_from_address(token_2_contractAddr)
         if not tokenContr2 or (not tokenContr2.transferFrom) then
@@ -730,7 +726,7 @@ function M:transfer(arg: string)
     call_dao_contract(self,from_address,to,amount-fee)
 
 	if is_valid_contract_address(to) then
-        -- 如果目标是合约地址，可能是多签合约，需要调用回调函数
+
         let multiOwnedContract = import_contract_from_address(to)
         let amountStr = tostring(amount - fee)
         if multiOwnedContract and (multiOwnedContract.on_deposit_contract_token) then
@@ -739,7 +735,7 @@ function M:transfer(arg: string)
     end
 end
 
--- spender用户从授权人授权的金额中发起转账
+
 -- arg format: fromAddress,toAddress,amount(with precision)
 function M:transferFrom(arg: string)
     checkState(self)
@@ -810,7 +806,7 @@ function M:transferFrom(arg: string)
     call_dao_contract(self,fromAddress,toAddress,amount-fee)
 end
 
--- 授权另一个用户可以从自己的余额中提现
+
 -- arg format: spenderAddress,amount(with precision)
 function M:approve(arg: string)
     checkState(self)
@@ -837,7 +833,7 @@ function M:approve(arg: string)
     emit Approved(json.dumps(eventArg))
 end
 
--- 查询一个用户被另外某个用户授权的金额
+
 -- arg format: spenderAddress,authorizerAddress
 offline function M:approvedBalanceFrom(arg: string)
     let parsed = parse_at_least_args(arg, 2, "argument format error, need format is spenderAddress,authorizerAddress")
@@ -861,7 +857,6 @@ offline function M:approvedBalanceFrom(arg: string)
     return allowedAmountStr
 end
 
--- 查询用户授权给其他人的所有金额
 -- arg format: fromAddress
 offline function M:allApprovedFromUser(arg: string)
     let authorizer = arg
@@ -1008,7 +1003,7 @@ end
 ----------------------uniswap-------------------------------------
 
 -- add_token1_amount,max_add_token2_amount,expired_blocknum
--- 可包含在<=expired_blocknum的block里
+
 function M:addLiquidity(arg: string)
 	checkState(self)
 	let parsed = parse_at_least_args(arg, 3, "argument format error, need format is add_token1_amount,max_add_token2_amount,expired_blocknum")
@@ -1073,18 +1068,18 @@ function M:addLiquidity(arg: string)
 	let token_1_contractAddr = self.storage.token_1_contractAddr
     let token_2_contractAddr = self.storage.token_2_contractAddr
 
-    -- 如果是原生资产，从本合约中存有的此用户的此资产余额中扣除
+
     if is_native_asset_symbol(token_1_contractAddr) then
-        -- 如果token1是原生资产
+
         changeUserNativeBalance(self, from_address, token_1_contractAddr, - add_token1_amount)
     else
-        -- 如果token1是合约代币
+
         let token1_contract = import_contract_from_address(token_1_contractAddr)
         token1_contract:transferFrom(prifixstr..tostring(add_token1_amount))
     end
 
     if is_native_asset_symbol(token_2_contractAddr) then
-        -- 如果token2是原生资产
+
         changeUserNativeBalance(self, from_address, token_2_contractAddr, - caculate_token2_amount)
     else
         -- 如果token2是合约代币
@@ -1136,7 +1131,7 @@ function M:addLiquidity(arg: string)
 end
 
 -- args: destory_liquidity_token_amount,min_remove_asset1_amount,min_remove_asset2_amount,expired_blocknum,withdraw
--- 可包含在<=expired_blocknum的block里
+
 function M:removeLiquidity(arg: string)
 	checkState(self)
 	let parsed = parse_at_least_args(arg, 4, "argument format error, need format is destory_liquidity_token_amount,min_remove_asset1_amount,min_remove_asset2_amount,expired_blocknum,withdraw(optional)")
@@ -1207,25 +1202,25 @@ function M:removeLiquidity(arg: string)
 	let token_1_contractAddr = self.storage.token_1_contractAddr
     let token_2_contractAddr = self.storage.token_2_contractAddr
     
-    -- 如果是原生资产，给本合约中此用户的原生资产增加余额
+
 	
     let prifixstr = from_address..","
     
     if is_native_asset_symbol(token_1_contractAddr) then
-        -- 如果token1是原生资产
+
         changeUserNativeBalance(self, from_address, token_1_contractAddr, caculate_token1_amount)
         if withdraw  then
             withdraw_native_asset_private(self,from_address,token_1_contractAddr,tostring(caculate_token1_amount))
         end  
         
     else
-        -- 如果token1是合约代币
+
         let token1_contract = import_contract_from_address(token_1_contractAddr)
         token1_contract:transfer(prifixstr..tostring(caculate_token1_amount))
     end
     
     if is_native_asset_symbol(token_2_contractAddr) then
-        -- 如果token2是原生资产
+
         changeUserNativeBalance(self, from_address, token_2_contractAddr, caculate_token2_amount)
         if withdraw  then
             withdraw_native_asset_private(self,from_address,token_2_contractAddr,tostring(caculate_token2_amount))
